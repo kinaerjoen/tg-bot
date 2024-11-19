@@ -6,6 +6,8 @@ const bot = new TelegramBot(TOKEN, { polling: true });
 
 let userState = {}; // Объект для хранения состояния пользователей (текущий вопрос, набранные баллы и т.д.)
 
+let timer;
+
 /**
  * Функция для получения вопросов с The Trivia API
  * @returns {Array} Массив вопросов
@@ -77,7 +79,7 @@ async function startQuiz(chatId) {
  * Функция для отправки вопроса пользователю с кнопками
  * @param {Number} chatId Идентификатор чата пользователя
  */
-function sendQuestion(chatId) {
+async function sendQuestion(chatId) {
   const user = userState[chatId];
 
   if (user.currentQuestionIndex < user.questions.length) {
@@ -91,11 +93,37 @@ function sendQuestion(chatId) {
       { text: option, callback_data: option },
     ]);
 
-    bot.sendMessage(chatId, currentQuestion.question, {
+
+    let i = 15;
+    const questionMessage = await bot.sendMessage(chatId, `${currentQuestion.question} Осталось секунд: ${i}`, {
       reply_markup: {
         inline_keyboard: inlineKeyboard,
       },
     });
+    timer = setInterval(() => {
+      i--;
+      if (i > -1) {
+        bot.editMessageText(`${currentQuestion.question} Осталось секунд: ${i}`, {
+          chat_id: chatId,
+          message_id: questionMessage.message_id,
+          reply_markup: {
+            inline_keyboard: inlineKeyboard,
+          },
+        })
+      } else {
+        bot.sendMessage(
+          chatId,
+          `Время вышло! Правильный ответ: ${user.questions[user.currentQuestionIndex].correctAnswer}`
+        );
+        clearInterval(timer);
+        user.currentQuestionIndex++;
+        setTimeout(()=>{
+          sendQuestion(chatId);
+        }, 100)
+      }
+    }, 1000);
+
+
   } else {
     // Отправляем результат викторины пользователю
     bot
@@ -160,6 +188,7 @@ async function handleAnswer(chatId, answer) {
     ); // Ждём, пока сообщение отправится
   }
 
+  clearInterval(timer);
   user.currentQuestionIndex++;
   sendQuestion(chatId); // После отправки сообщения отправляем следующий вопрос
 }
