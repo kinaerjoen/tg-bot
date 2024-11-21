@@ -1,39 +1,31 @@
-require("dotenv").config(); // Подключение библиотеки dotenv для работы с переменными окружения
+require("dotenv").config();
 const TelegramBot = require("node-telegram-bot-api");
 const TOKEN = process.env.TOKEN_BOT;
 
 const bot = new TelegramBot(TOKEN, { polling: true });
 
-let userState = {}; // Объект для хранения состояния пользователей (текущий вопрос, набранные баллы и т.д.)
-
+let userState = {};
 let timer;
 
-/**
- * Функция для получения вопросов с The Trivia API
- * @returns {Array} Массив вопросов
- */
 
-async function fetchQuestions() {
+async function fetchQuestions(category) {
   try {
     const response = await fetch(
-      "https://the-trivia-api.com/api/questions?limit=5"
+      `https://the-trivia-api.com/api/questions?limit=5&tags=${category}`
     );
     if (response.ok) {
-      return await response.json(); // Возвращаем результат вызова в виде промиса
+      return await response.json();
     } else {
       console.error(`Ошибка HTTP: ${response.status}`);
-      return []; // Возвращаем пустой массив в случае ошибки
+      return [];
     }
   } catch (err) {
     console.error("Произошла ошибка при получении данных:", err);
-    return []; // Возвращаем пустой массив в случае ошибки
+    return [];
   }
 }
 
-/**
- * Обработчик команды /start
- * Отправляет приветственное сообщение
- */
+
 bot.onText(/\/start/, (msg) => {
   bot.sendMessage(
     msg.chat.id,
@@ -41,98 +33,135 @@ bot.onText(/\/start/, (msg) => {
   );
 });
 
-/**
- * Обработчик команды /quiz
- * Начинает викторину для пользователя
- */
-bot.onText(/\/quiz/, async (msg) => {
-  startQuiz(msg.chat.id);
+
+function chooseCategory(chatId) {
+  if (userState[chatId] && userState[chatId].active) {
+    bot.sendMessage(chatId, "Вы уже проходите викторину. Завершите её перед началом новой.");
+    return;
+  }
+
+  bot.sendMessage(chatId, "Пожалуйста, выберите категорию:", {
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: "История", callback_data: "&history" },
+          { text: "Наука", callback_data: "&science" },
+          { text: "Музыка", callback_data: "&music" },
+        ],
+        [
+          { text: "География", callback_data: "&geography" },
+          { text: "Личности", callback_data: "&people" },
+          { text: "Спорт", callback_data: "&sport" },
+        ],
+        [
+          { text: "Фильмы и сериалы", callback_data: "&film_and_tv" },
+          { text: "Еда и напитки", callback_data: "&food_and_drink" },
+        ],
+        [
+          { text: "Искусство и литература", callback_data: "&arts_and_literature" },
+          { text: "Общество и культура", callback_data: "&society_and_culture" },
+        ],
+      ],
+    },
+  });
+}
+
+
+bot.onText(/\/quiz/, (msg) => {
+  chooseCategory(msg.chat.id);
 });
 
-/**
- * Функция для начала новой викторины
- * @param {Number} chatId Идентификатор чата пользователя
- */
-async function startQuiz(chatId) {
-  userState[chatId] = { currentQuestionIndex: 0, score: 0, questions: [] };
+
+async function startQuiz(chatId, category) {
+  if (userState[chatId] && userState[chatId].active) {
+    bot.sendMessage(chatId, "Вы уже проходите викторину. Завершите её перед началом новой.");
+    return;
+  }
+
+  // active - не дает пользователю начать две викторины одновременно
+  // answered - не дает пользователю нажать на два варианта ответа в одном вопросе одновременно
+  userState[chatId] = { active: true, currentQuestionIndex: 0, score: 0, questions: [], answered: false };
 
   try {
-    const questions = await fetchQuestions();
+    const questions = await fetchQuestions(category);
     if (questions.length === 0) {
       bot.sendMessage(
         chatId,
         "Произошла ошибка при загрузке вопросов. Попробуйте позже."
       );
+      delete userState[chatId];
     } else {
       userState[chatId].questions = questions;
       sendQuestion(chatId);
     }
-  } catch (error) {
+  } catch {
     bot.sendMessage(
       chatId,
       "Произошла ошибка при загрузке вопросов. Попробуйте позже."
     );
+    delete userState[chatId];
   }
 }
 
-/**
- * Функция для отправки вопроса пользователю с кнопками
- * @param {Number} chatId Идентификатор чата пользователя
- */
 async function sendQuestion(chatId) {
-  const user = userState[chatId];
+  try {
+    const user = userState[chatId];
 
-  if (user.currentQuestionIndex < user.questions.length) {
-    const currentQuestion = user.questions[user.currentQuestionIndex];
-    const options = [
-      ...currentQuestion.incorrectAnswers,
-      currentQuestion.correctAnswer,
-    ].sort(() => Math.random() - 0.5);
+    if (!user || !user.active) return;
+    user.answered = false;
 
-    const inlineKeyboard = options.map((option) => [
-      { text: option, callback_data: option },
-    ]);
+    if (user.currentQuestionIndex < user.questions.length) {
+      const currentQuestion = user.questions[user.currentQuestionIndex];
+      const options = [
+        ...currentQuestion.incorrectAnswers,
+        currentQuestion.correctAnswer,
+      ].sort(() => Math.random() - 0.5);
 
+      const inlineKeyboard = options.map((option) => [
+        { text: option, callback_data: option },
+      ]);
 
-    let i = 15;
-    const questionMessage = await bot.sendMessage(chatId, `${currentQuestion.question} Осталось секунд: ${i}`, {
-      reply_markup: {
-        inline_keyboard: inlineKeyboard,
-      },
-    });
-    timer = setInterval(() => {
-      i--;
-      if (i > -1) {
-        bot.editMessageText(`${currentQuestion.question} Осталось секунд: ${i}`, {
-          chat_id: chatId,
-          message_id: questionMessage.message_id,
+      let i = 15;
+      const questionMessage = await bot.sendMessage(
+        chatId,
+        `${currentQuestion.question} Осталось секунд: ${i}`,
+        {
           reply_markup: {
             inline_keyboard: inlineKeyboard,
           },
-        })
-      } else {
-        bot.sendMessage(
-          chatId,
-          `Время вышло! Правильный ответ: ${user.questions[user.currentQuestionIndex].correctAnswer}`
-        );
-        clearInterval(timer);
-        user.currentQuestionIndex++;
-        setTimeout(()=>{
+        }
+      );
+      
+      timer = setInterval(async() => {
+        i--;
+        if (i > -1) {
+          bot.editMessageText(`${currentQuestion.question} Осталось секунд: ${i}`, {
+            chat_id: chatId,
+            message_id: questionMessage.message_id,
+            reply_markup: {
+              inline_keyboard: inlineKeyboard,
+            },
+          }).catch((err) => {
+            console.error("Ошибка редактирования сообщения:", err);
+          });
+        } else {
+          if (!user.answered) {
+            await bot.sendMessage(
+              chatId,
+              `Время вышло! Правильный ответ: ${currentQuestion.correctAnswer}`
+            );
+            user.answered = true;
+          }
+          clearInterval(timer);
+          user.currentQuestionIndex++;
           sendQuestion(chatId);
-        }, 100)
-      }
-    }, 1000);
-
-
-  } else {
-    // Отправляем результат викторины пользователю
-    bot
-      .sendMessage(
+        }
+      }, 1000);
+    } else {
+      bot.sendMessage(
         chatId,
         `Викторина завершена! Ваш результат: ${user.score}/${user.questions.length}`
-      )
-      .then(() => {
-        // После отправки результата предлагаем сыграть еще раз
+      ).then(() => {
         bot.sendMessage(chatId, "Хотите сыграть еще раз?", {
           reply_markup: {
             inline_keyboard: [
@@ -143,52 +172,60 @@ async function sendQuestion(chatId) {
         });
       });
 
-    // Удаляем состояние пользователя после завершения викторины
+      delete userState[chatId];
+      clearInterval(timer);
+    }
+  } catch {
+    bot.sendMessage(chatId, "Произошла ошибка при отправке вопроса. Начните викторину заново.");
     delete userState[chatId];
+    clearInterval(timer);
   }
 }
 
-/**
- * Обработчик callback query
- * Обрабатывает ответы пользователя и события после завершения викторины
- */
+
+async function handleAnswer(chatId, answer) {
+  try {
+    const user = userState[chatId];
+    if (!user || !user.active || user.answered) return; 
+
+    const question = user.questions[user.currentQuestionIndex];
+    user.answered = true;
+
+    if (answer === question.correctAnswer) {
+      user.score++;
+      await bot.sendMessage(chatId, "Правильно!");
+    } else {
+      await bot.sendMessage(
+        chatId,
+        `Неправильно! Правильный ответ: ${question.correctAnswer}`
+      );
+    }
+
+    clearInterval(timer);
+    user.currentQuestionIndex++;
+    sendQuestion(chatId);
+  } catch {
+    bot.sendMessage(chatId, "Произошла ошибка при обработке ответа.");
+  }
+}
+
+
 bot.on("callback_query", (callbackQuery) => {
   const msg = callbackQuery.message;
   const chatId = msg.chat.id;
   const answer = callbackQuery.data;
 
-  if (answer === "start_quiz") {
-    startQuiz(chatId); // Начинаем новую викторину, если пользователь выбрал "начать заново"
+  if (answer.startsWith("&")) {
+    startQuiz(chatId, answer.slice(1));
+  } else if (answer === "start_quiz") {
+    chooseCategory(chatId);
   } else if (answer === "end_quiz") {
     bot.sendMessage(chatId, "Спасибо за игру! Возвращайтесь в любое время.");
-  } else if (userState[chatId]) {
+    delete userState[chatId];
+    clearInterval(timer);
+  } else {
     handleAnswer(chatId, answer);
   }
 
-  // Отправляем ответ на callback_query, чтобы Telegram убрал подсветку кнопки
   bot.answerCallbackQuery(callbackQuery.id);
 });
-
-/**
- * Функция для обработки ответа пользователя
- * @param {Number} chatId Идентификатор чата пользователя
- * @param {String} answer Ответ пользователя
- */
-async function handleAnswer(chatId, answer) {
-  const user = userState[chatId];
-  const question = user.questions[user.currentQuestionIndex];
-
-  if (answer === question.correctAnswer) {
-    user.score++;
-    await bot.sendMessage(chatId, "Правильно!"); // Ждём, пока сообщение отправится
-  } else {
-    await bot.sendMessage(
-      chatId,
-      `Неправильно! Правильный ответ: ${question.correctAnswer}`
-    ); // Ждём, пока сообщение отправится
-  }
-
-  clearInterval(timer);
-  user.currentQuestionIndex++;
-  sendQuestion(chatId); // После отправки сообщения отправляем следующий вопрос
-}
